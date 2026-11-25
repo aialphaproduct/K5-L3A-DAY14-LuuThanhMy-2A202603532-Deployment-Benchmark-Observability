@@ -45,10 +45,10 @@
 | | Develop | Production |
 |--|---------|------------|
 | Base | python:3.11 (full) | python:3.11-slim (multi-stage) |
-| Kích thước | ~1.0 GB | ~238 MB |
-| Chênh lệch | -76% |
+| Kích thước | **1.67 GB** | **240 MB** |
+| Chênh lệch | **-86%** |
 
-*(Số đo từ `docker images` sau khi build)*
+*(Số đo thực tế từ `docker images my-agent` sau khi build)*
 
 ### Exercise 2.4: Stack Docker Compose
 
@@ -66,27 +66,66 @@ Kết quả test qua Nginx: `GET http://localhost/health` → 200; `POST http://
 ### Exercise 4.1: API Key auth
 
 ```
-# Thiếu key → 401
-curl -i -X POST "http://localhost:8000/ask" -H "Content-Type: application/json" -d '{"question":"Hi"}'
-HTTP/1.1 401 Unauthorized
-
 # Key đúng → 200
-curl -i -X POST "http://localhost:8000/ask" -H "X-API-Key: secret-key-123" -H "Content-Type: application/json" -d '{"question":"Hi"}'
+curl -i -X POST "http://localhost:8001/ask" -H "X-API-Key: secret-key-123" -H "Content-Type: application/json" -d "{\"question\":\"Hello\"}"
 HTTP/1.1 200 OK
-{"answer":"..."}
+date: Wed, 25 Nov 2026 08:46:46 GMT
+server: uvicorn
+content-length: 122
+content-type: application/json
+
+{"question":"Hello","answer":"Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận."}
+
+# Key sai → 403
+curl -i -X POST "http://localhost:8001/ask" -H "X-API-Key: wrong-key" -H "Content-Type: application/json" -d "{\"question\":\"Hello\"}"
+HTTP/1.1 403 Forbidden
+date: Wed, 25 Nov 2026 08:46:46 GMT
+server: uvicorn
+content-length: 29
+content-type: application/json
+
+{"detail":"Invalid API key."}
+
+# Không có key → 401
+curl -i -X POST "http://localhost:8001/ask" -H "Content-Type: application/json" -d "{\"question\":\"Hello\"}"
+HTTP/1.1 401 Unauthorized
+date: Wed, 25 Nov 2026 08:50:05 GMT
+server: uvicorn
+content-length: 67
+content-type: application/json
+
+{"detail":"Missing API key. Include header: X-API-Key: <your-key>"}
 ```
 
 ### Exercise 4.2–4.3: JWT + Rate limit
 
 ```
 # Lấy token
-curl -X POST "http://localhost:8000/auth/token" -d "username=student&password=demo123"
-{"access_token":"eyJ...","token_type":"bearer"}
+curl -X POST "http://localhost:8002/auth/token" -H "Content-Type: application/json" -d "{\"username\":\"student\",\"password\":\"demo123\"}"
+{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...","token_type":"bearer","expires_in_minutes":60}
 
-# Vòng lặp 15 lần → 429 sau request thứ 10
-# (tài khoản student giới hạn 10 req/phút)
-HTTP/1.1 429 Too Many Requests
-Retry-After: 60
+# Dùng token gọi /ask → 200
+curl -i -X POST "http://localhost:8002/ask" -H "Authorization: Bearer eyJhbGci..." -H "Content-Type: application/json" -d "{\"question\":\"Hello\"}"
+HTTP/1.1 200 OK
+{"question":"Hello","answer":"...","usage":{"requests_remaining":9,"budget_remaining_usd":2.1e-05}}
+
+# Rate limit test (student giới hạn 10 req/phút)
+# Request 1-9  → 200 OK
+# Request 10   → 429 Too Many Requests
+# Request 11   → 429 Too Many Requests
+# Request 12   → 429 Too Many Requests
+1: 200
+2: 200
+3: 200
+4: 200
+5: 200
+6: 200
+7: 200
+8: 200
+9: 200
+10: 429
+11: 429
+12: 429
 ```
 
 ### Exercise 4.4: Cost guard
@@ -108,9 +147,43 @@ Nếu rate limit counter lưu trong RAM (dict Python), instance A có counter ri
 
 **Kết quả test stateless:**
 ```
-docker compose -p k5-day14-scaling up -d --build --scale agent=3
+docker compose -p k5-day14-scaling up --build --scale agent=3 -d
 python test_stateless.py
-# 5 câu trong 1 session, trả lời đúng từ mọi instance → stateless OK
+
+============================================================
+Stateless Scaling Demo
+============================================================
+
+Session ID: b3337106-8239-477e-89a9-6b42b1da2542
+
+Request 1: [instance-ec505a]
+  Q: What is Docker?
+  A: Container là cách đóng gói app để chạy ở mọi nơi. Build once, run anywhere!...
+
+Request 2: [instance-09066d]
+  Q: Why do we need containers?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+Request 3: [instance-ac2c59]
+  Q: What is Kubernetes?
+  A: Tôi là AI agent được deploy lên cloud. Câu hỏi của bạn đã được nhận....
+
+Request 4: [instance-ec505a]
+  Q: How does load balancing work?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+Request 5: [instance-09066d]
+  Q: What is Redis used for?
+  A: Agent đang hoạt động tốt! (mock response) Hỏi thêm câu hỏi đi nhé....
+
+------------------------------------------------------------
+Total requests: 5
+Instances used: {'instance-09066d', 'instance-ac2c59', 'instance-ec505a'}
+✅ All requests served despite different instances!
+
+--- Conversation History ---
+Total messages: 10
+✅ Session history preserved across all instances via Redis!
 ```
 
 ---
